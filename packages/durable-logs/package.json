@@ -1,0 +1,134 @@
+{
+  "name": "opentelemetry-sdk",
+  "version": "3.0.0",
+  "description": "Opt-in durable OpenTelemetry log delivery",
+  "homepage": "https://github.com/Kotodian/opentelemetry-js/tree/main/packages/durable-logs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kotodian/opentelemetry-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Kotodian/opentelemetry-js/issues"
+  },
+  "license": "Apache-2.0",
+  "main": "./dist/index.cjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
+      "default": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      }
+    },
+    "./exporters/http": {
+      "require": {
+        "types": "./dist/exporters/http.d.cts",
+        "default": "./dist/exporters/http.cjs"
+      },
+      "default": {
+        "types": "./dist/exporters/http.d.mts",
+        "default": "./dist/exporters/http.mjs"
+      }
+    },
+    "./web": {
+      "require": {
+        "types": "./dist/web.d.cts",
+        "default": "./dist/web.cjs"
+      },
+      "default": {
+        "types": "./dist/web.d.mts",
+        "default": "./dist/web.mjs"
+      }
+    },
+    "./desktop": {
+      "require": {
+        "types": "./dist/desktop.d.cts",
+        "default": "./dist/desktop.cjs"
+      },
+      "default": {
+        "types": "./dist/desktop.d.mts",
+        "default": "./dist/desktop.mjs"
+      }
+    },
+    "./testing": {
+      "require": {
+        "types": "./dist/testing.d.cts",
+        "default": "./dist/testing.cjs"
+      },
+      "default": {
+        "types": "./dist/testing.d.mts",
+        "default": "./dist/testing.mjs"
+      }
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "prepublishOnly": "npm run compile",
+    "compile": "tsdown",
+    "clean": "rimraf dist build",
+    "test": "nyc mocha 'test/*.test.ts'",
+    "test:browser": "karma start --single-run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "version": "node ../../scripts/version-update.js",
+    "watch": "tsdown --watch --no-clean",
+    "peer-api-check": "node ../../scripts/peer-api-check.mjs",
+    "align-api-deps": "node ../../scripts/align-api-deps.mjs"
+  },
+  "keywords": [
+    "opentelemetry",
+    "logs",
+    "browser",
+    "desktop",
+    "telemetry"
+  ],
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.10.0 <1.11.0",
+    "@opentelemetry/sdk-logs": "3.0.0"
+  },
+  "dependencies": {
+    "@opentelemetry/core": "3.0.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.300.0",
+    "@opentelemetry/otlp-transformer": "0.300.0",
+    "@opentelemetry/resources": "3.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/preset-env": "7.29.7",
+    "@opentelemetry/api": ">=1.10.0 <1.11.0",
+    "@opentelemetry/sdk-logs": "3.0.0",
+    "@types/mocha": "10.0.10",
+    "@types/node": "18.19.130",
+    "@types/webpack-env": "1.16.3",
+    "babel-plugin-istanbul": "8.0.0",
+    "fake-indexeddb": "^6.2.6",
+    "karma": "6.4.4",
+    "karma-chrome-launcher": "3.2.0",
+    "karma-coverage": "2.2.1",
+    "karma-mocha": "2.0.1",
+    "karma-spec-reporter": "0.0.37",
+    "karma-webpack": "5.0.1",
+    "mocha": "12.0.3",
+    "nyc": "18.0.0",
+    "ts-loader": "9.5.7",
+    "tsdown": "0.22.14",
+    "typescript": "5.2.2",
+    "webpack": "5.108.4",
+    "webpack-cli": "7.2.3"
+  }
+}

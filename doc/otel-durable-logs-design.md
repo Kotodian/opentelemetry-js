@@ -2,7 +2,9 @@
 
 状态：设计评审稿（2026-10-28）。基于本仓库 OpenTelemetry JS，只**新增**事件入口、一个持久化调度 processor、一个带可选 `transformer` 的通用 HTTP 日志 exporter，以及 Web／桌面存储适配；不修改上游 `Logger`、`LoggerProvider`、已有 processor／exporter。未传 `transformer` 时默认使用本仓库的 `@opentelemetry/exporter-logs-otlp-http` 发送 OTLP 日志；传入时由调用方定义 HTTP 请求和响应格式。SDK 不内置任何目标类型或事件分类。公开包不包含接入方的地址、凭据、事件名单、私有协议映射或内部文档；这些由调用方在包外注入。
 
-**现有源码边界：** `api/src/logs/Logger.ts` 的 `emit(): void`、`packages/sdk-logs/src/LogRecordProcessor.ts` 的 `onEmit(): void`、`packages/sdk-logs/src/export/LogRecordExporter.ts` 的回调式 `export(..., callback): void` 均保持原样。`LoggerProvider` 已有 `resource`／`processors` 装配点；`experimental/packages/exporter-logs-otlp-http` 已提供浏览器和 Node 的 `OTLPLogExporter`，但构造函数固定使用 `JsonLogsSerializer`，配置仅能改变 URL、头等传输参数，无法改变请求体格式。底层 `ISerializer` 可替换字节序列化，但现有浏览器传输丢弃响应体，现有成功回调也不表达逐项结果；自定义协议因此需要新增通用 HTTP 扩展，不能只改现有 exporter 配置。本仓库目前没有持久队列或下文的 `TelemetryEmitter`／`ExporterRegistry`／`HttpLogExporter`；以下接口均为拟新增扩展。`BatchLogRecordProcessorBase.ts` 的现有默认值仅是批次 512、内存队列 2048、等待 1000 ms、导出超时 30000 ms；不能把这四项说成持久化重试或 HTTP 调度的默认值。
+实现进展：`packages/durable-logs/` 已有注册、异步入口、持久化调度、通用 HTTP exporter 和 Web／桌面存储适配，并通过模块单测与打包检查。真实浏览器运行、主线程延迟与 worker 卸载、业务接入及发布仍按第 6 节验收，不将开发中的包视为已发布。
+
+**现有源码边界：** `api/src/logs/Logger.ts` 的 `emit(): void`、`packages/sdk-logs/src/LogRecordProcessor.ts` 的 `onEmit(): void`、`packages/sdk-logs/src/export/LogRecordExporter.ts` 的回调式 `export(..., callback): void` 均保持原样。`LoggerProvider` 已有 `resource`／`processors` 装配点；`experimental/packages/exporter-logs-otlp-http` 已提供浏览器和 Node 的 `OTLPLogExporter`，但构造函数固定使用 `JsonLogsSerializer`，配置仅能改变 URL、头等传输参数，无法改变请求体格式。底层 `ISerializer` 可替换字节序列化，但现有浏览器传输丢弃响应体，现有成功回调也不表达逐项结果；自定义协议因此需要新增通用 HTTP 扩展，不能只改现有 exporter 配置。上述扩展目前实现在独立工作区包中，原有 OTel API 与处理器未改。`BatchLogRecordProcessorBase.ts` 的现有默认值仅是批次 512、内存队列 2048、等待 1000 ms、导出超时 30000 ms；不能把这四项说成持久化重试或 HTTP 调度的默认值。
 
 ## 1. 装配：processor 与 exporter 全部注册
 
@@ -40,10 +42,8 @@ exporters.register({
 });
 await exporters.initialize();
 const delivery = new DurableDispatchProcessor({
-  storage: new IndexedDbStorage('otel-durable-logs'), // 桌面改用主进程文件存储
-  resolveTarget: (id, targetKey) =>
-    exporters.getInitializedTarget(id, targetKey),
-  subscribeTargetAvailability: wake => exporters.subscribeAvailability(wake),
+  storage: new IndexedDbQueueStorage('otel-durable-logs'), // 桌面改用主进程文件存储
+  registry: exporters,
 });
 const provider = new LoggerProvider({
   resource,
@@ -198,7 +198,7 @@ drive(target, force):
 3. 在事务外发送批次；在 `settle` 事务中仅删除明确 accepted 的条目，永久 rejected 移入有界错误记录，retryable／超时／未知 ACK 保留原快照并持久化次数及下次重试时间。有效的服务端限流截止优先于本地退避；部分 ACK 中仍有 retryable 时暂停后续批次，不重置失败计数。完整有效 ACK 且该批无 retryable 时原子记录 `lastTerminalAckAt`，全 rejected 也需要批次间隔但不算成功、不清零失败计数。ACK 结算提交后才能发该目标下一批。
 4. 根据队首等待、重试截止、成功批次间隔、租约到期和各配置来源刷新时间设置该目标下一次必要唤醒。容量淘汰与过期处理按该目标政策在存储事务内执行，跳过在途项，不改旧事件时间伪装新事件；目标队列排空才清除 `drainActive`。
 
-`forceFlush()` 绕过条数／队首等待门槛并唤醒目标，但不绕过组合开关、exporter 未初始化、离线、服务端限流或已持久化的退避截止；其 `pendingForce` 保留到本轮发送或超时，不会因最短间隔到期前的定时等待丢失。它等待本轮可发送批次的结算或超时，不承诺整个队列已被服务器接收。`shutdown()` 停止新的入队和定时器，等待正在进行的 append 与 ACK 结算落盘后关闭存储；未发送项保留到下次 `start()` 恢复。
+`forceFlush()` 绕过条数／队首等待门槛并唤醒目标，但不绕过组合开关、exporter 未初始化、离线、服务端限流或已持久化的退避截止；其 `pendingForce` 保留到本轮发送或超时，不会因最短间隔到期前的定时等待丢失。它等待已入队记录收到终态 ACK；无法继续发送时明确失败，超过 `ForceFlushOptions.timeoutMillis`（默认 30 秒）时超时失败，不把仍在队列里的记录报告为完成。`shutdown()` 先停止新的入队并尝试同等的 flush，随后停止定时器、等待进行中的 append 落盘并关闭存储；失败或超时的未确认项保留到下次 `start()` 恢复。
 
 ## 4. exporter 的输入、结果和远程配置
 
@@ -279,6 +279,7 @@ interface ExporterConfigSource {
   id: string; // 同一目标内稳定唯一，供逐来源恢复缓存
   fallback: ConfigDecision; // 首次加载失败时的显式决定
   load(): Promise<ConfigDecision>;
+  initialLoad?: 'blocking' | 'background'; // 本地/mock 可阻塞启动；默认远程后台刷新
   subscribe?(notify: () => void): () => void; // 环境／运行时变更时主动刷新
   refreshJitterRatio?: number; // 周期拉取避免同时请求
   failureRefreshAfterMs?: number; // 不设置则沿用缓存／fallback 的刷新间隔
@@ -298,7 +299,7 @@ processor 在 `start()` 异步恢复每个 `(exporterId, targetKey, sourceId)` �
 
 ## 5. npm 包边界与发布
 
-在现有 npm workspaces 下新增独立目录 `packages/durable-logs/`，其自身 `package.json` 使用发布者拥有的 scope，例如占位名 `@your-scope/otel-durable-logs`；不得使用未经授权的 `@opentelemetry` scope。仓库根包继续保持 `private: true`，只发布这个新增工作区包。包名、版本和 scope 在实现时确定，不把示例名直接发布。
+在现有 npm workspaces 下新增 `packages/durable-logs/`，发布为不带业务方名称的通用包 `opentelemetry-sdk`；不得使用未经授权的 `@opentelemetry` scope。它属于仓库的稳定 SDK 发布组，版本与 `packages/*` 同步为 `3.0.0`，后续随该组升级。仓库根包继续保持 `private: true`。
 
 | 导出入口           | 内容与运行边界                                                                                           |
 | ------------------ | -------------------------------------------------------------------------------------------------------- |
@@ -309,18 +310,20 @@ processor 在 `start()` 异步恢复每个 `(exporterId, targetKey, sourceId)` �
 
 每个子路径分别构建 ESM、CommonJS 和类型声明，`exports` 显式指向产物；根入口和 `./web` 的依赖图不得触达 `fs`、Electron 或主进程代码。`./exporters/http` 的默认路径依赖本仓库官方 `@opentelemetry/exporter-logs-otlp-http`；发布时声明经兼容测试的依赖版本，检查其浏览器／Node 条件导出均可用。自定义 transformer 不作为 SDK 内置子路径或硬编码目标发布。`@opentelemetry/api`、`@opentelemetry/sdk-logs` 仍为经兼容测试验证的 peer dependencies。独立包配置 `files` 白名单，仅包含 `dist`、公开 README 和 LICENSE；设置 `publishConfig.access=public`，不继承根包的私有发布属性。包内 README 给出 Web、桌面各一段注册与 emit 示例，示例仅用虚构端点和事件。
 
-发布流水线按以下顺序执行，命令从仓库根目录运行；首次发布前由发布者确认 npm scope 归属并登录，CI 发布则配置 npm trusted publishing。版本遵循 SemVer，已有版本不能覆盖，预发布版本使用单独 dist-tag：
+验证由仓库现有 Nx 与 CI 流水线执行：根目录编译、单测、浏览器测试、lint，随后由 `verify-pack` 作发布物入口与类型声明检查；不用开发者单独执行 `npm pack`。首次发布需取得 npm 包名的发布权限，并为此 fork 配置 trusted publishing；后续通过 release PR 和 `publish-to-npm` 工作流发布。版本遵循稳定 SDK 发布组约定，预发布版本使用对应 dist-tag：
 
 ```sh
-npm ci
-npm run compile --workspace packages/durable-logs
-npm run test --workspace packages/durable-logs
-npm run test:browser --workspace packages/durable-logs
-npm pack --workspace packages/durable-logs --dry-run
-npm publish --workspace packages/durable-logs --access public
+npm ci --ignore-scripts
+npm run compile
+npm run test
+npm run test:browser
+npm run lint
+npm run verify-pack
 ```
 
-`npm pack --dry-run` 必须人工或 CI 核对发布清单：只包含编译产物和公开说明，无非公开 URL、文档引用、真实凭据或应用配置。发布后在空白 Web 消费者项目中执行 `npm install @your-scope/otel-durable-logs @opentelemetry/api @opentelemetry/sdk-logs`；桌面消费者使用同一公开包，分别导入 `./web`、`./desktop` 和 `./exporters/http` 子路径，确认类型解析、浏览器打包和桌面主进程加载；再用 `npm view @your-scope/otel-durable-logs version dist-tags` 核对已发布版本。仓库公开文档也应通过同一敏感词／URL 扫描，不能仅检查 tarball。
+真实浏览器测试已接入 `test:browser`。worker 性能验收仍需在正式发布前完成；上面的命令说明仓库流水线，不代表当前开发包已发布。
+
+`verify-pack` 须核对发布清单：只包含编译产物和公开说明，无非公开 URL、文档引用、真实凭据或应用配置。发布后在空白 Web 消费者项目中安装 `opentelemetry-sdk`、`@opentelemetry/api` 和 `@opentelemetry/sdk-logs`；桌面消费者使用同一公开包，分别导入 `./web`、`./desktop` 和 `./exporters/http` 子路径，确认类型解析、浏览器打包和桌面主进程加载；再核对已发布版本与 dist-tag。仓库公开文档也应通过同一敏感词／URL 扫描，不能仅检查 tarball。
 
 ## 6. 验证用例与完成标准
 

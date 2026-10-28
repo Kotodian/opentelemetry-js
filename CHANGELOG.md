@@ -15,6 +15,8 @@ For notes on migrating to 3.x see [the 3.x migration guide](doc/3.x/migration-gu
 
 ### :rocket: Features
 
+* feat(durable-logs): add opt-in durable log delivery with browser and desktop storage, registered exporters, and asynchronous dispatch
+
 ### :bug: Bug Fixes
 
 ### :books: Documentation
